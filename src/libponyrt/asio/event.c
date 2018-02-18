@@ -5,6 +5,7 @@
 #include "../sched/scheduler.h"
 #include "ponyassert.h"
 #include <string.h>
+#include <stdio.h>
 
 PONY_API asio_event_t* pony_asio_event_create(pony_actor_t* owner, int fd,
   uint32_t flags, uint64_t nsec, bool noisy)
@@ -29,6 +30,7 @@ PONY_API asio_event_t* pony_asio_event_create(pony_actor_t* owner, int fd,
   ev->nsec = nsec;
   ev->writeable = false;
   ev->readable = false;
+  // printf("asio event create fd %d ev %p read %d write %d\n", fd, ev, flags & ASIO_READ, flags & ASIO_WRITE);
 
   // The event is effectively being sent to another thread, so mark it here.
   pony_ctx_t* ctx = pony_ctx();
@@ -42,6 +44,7 @@ PONY_API asio_event_t* pony_asio_event_create(pony_actor_t* owner, int fd,
 
 PONY_API void pony_asio_event_destroy(asio_event_t* ev)
 {
+  // printf("asio event destroy fd %d ev %p\n", ev->fd, ev);
   if((ev == NULL) || (ev->magic != ev) || (ev->flags != ASIO_DISPOSABLE))
   {
     pony_assert(0);
@@ -122,6 +125,10 @@ PONY_API void pony_asio_event_send(asio_event_t* ev, uint32_t flags,
   // ASIO messages technically are application messages, but since they have no
   // sender they aren't covered by backpressure. We pass false for an early
   // bailout in the backpressure code.
+
+  // ???? TODO ???? commenting this printf out triggers the hang much
+  // much faster.
+  printf("asio event send fd %d ev %p\n", ev->fd, ev);
   pony_sendv(pony_ctx(), ev->owner, &m->msg, &m->msg, false);
 
   // maybe wake up a scheduler thread if they've all fallen asleep

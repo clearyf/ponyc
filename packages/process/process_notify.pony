@@ -39,3 +39,8 @@ interface ProcessNotify
     Call when ProcessMonitor terminates to cleanup ProcessNotify.
     We return the exit code of the child process.
     """
+
+  fun ref log(str: String) =>
+    """
+    Log a message.
+    """

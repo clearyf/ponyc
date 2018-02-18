@@ -327,6 +327,7 @@ actor ProcessMonitor
         @pony_asio_event_create(this, _stdout_read, AsioEvent.read(), 0, true)
       _stderr_event =
         @pony_asio_event_create(this, _stderr_read, AsioEvent.read(), 0, true)
+      _log("stdin fd " + _stdin_write.string() + " stdout fd " + _stdout_read.string() + " stderr fd " + _stderr_read.string())
       _close_fd(_stdin_read)
       _close_fd(_stdout_write)
       _close_fd(_stderr_write)
@@ -506,12 +507,17 @@ actor ProcessMonitor
     if AsioEvent.writeable(flags) then all.append("writeable|") end
     all
 
+  fun ref _log(str: String) =>
+    _notifier.log(str)
+
   be _event_notify(event: AsioEventID, flags: U32, arg: U32) =>
     """
     Handle the incoming event.
     """
+    _log("got event")
     match event
     | _stdin_event =>
+      _log("got event for stdin")
       if AsioEvent.writeable(flags) then
         _stdin_writeable = _pending_writes()
       elseif AsioEvent.disposable(flags) then
@@ -519,6 +525,7 @@ actor ProcessMonitor
         _stdin_event = AsioEvent.none()
       end
     | _stdout_event =>
+      _log("got event for stdout")
       if AsioEvent.readable(flags) then
         _stdout_readable = _pending_reads(_stdout_read)
       elseif AsioEvent.disposable(flags) then
@@ -526,12 +533,15 @@ actor ProcessMonitor
         _stdout_event = AsioEvent.none()
       end
     | _stderr_event =>
+      _log("got event for stderr")
       if AsioEvent.readable(flags) then
         _stderr_readable = _pending_reads(_stderr_read)
       elseif AsioEvent.disposable(flags) then
         @pony_asio_event_destroy(event)
         _stderr_event = AsioEvent.none()
       end
+    else
+      _log("got event for unknown fd")
     end
     _try_shutdown()
 
@@ -544,14 +554,17 @@ actor ProcessMonitor
     match fd
     | _stdin_write =>
       if _stdin_event isnt AsioEvent.none() then
+        _log("closing stdin fd " + fd.string())
         @pony_asio_event_unsubscribe(_stdin_event)
       end
     | _stdout_read =>
       if _stdout_event isnt AsioEvent.none() then
+        _log("closing stdout fd " + fd.string())
         @pony_asio_event_unsubscribe(_stdout_event)
       end
     | _stderr_read =>
       if _stderr_event isnt AsioEvent.none() then
+        _log("closing stderr fd " + fd.string())
         @pony_asio_event_unsubscribe(_stderr_event)
       end
     end
@@ -629,9 +642,11 @@ actor ProcessMonitor
           if errno == _EAGAIN()  then
             return true // resource temporarily unavailable, retry
           end
+          _log("read from fd " + fd.string() + " failed")
           _close_fd(fd)
           return false
         | 0  =>
+          _log("read from fd " + fd.string() + " is EOF")
           _close_fd(fd)
           return false
         end

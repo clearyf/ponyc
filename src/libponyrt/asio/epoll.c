@@ -16,6 +16,7 @@
 #include <string.h>
 #include <signal.h>
 #include <stdbool.h>
+#include <stdio.h>
 
 #ifdef USE_VALGRIND
 #include <valgrind/helgrind.h>
@@ -166,6 +167,7 @@ PONY_API void pony_asio_event_resubscribe_write(asio_event_t* ev)
   else
     return;
 
+  printf("epoll resubscribing fd %d ev %p for writes\n", ev->fd, ev);
   epoll_ctl(b->epfd, EPOLL_CTL_MOD, ev->fd, &ep);
 }
 
@@ -191,6 +193,7 @@ PONY_API void pony_asio_event_resubscribe_read(asio_event_t* ev)
   else
     return;
 
+  printf("epoll resubscribing fd %d ev %p for reads\n", ev->fd, ev);
   epoll_ctl(b->epfd, EPOLL_CTL_MOD, ev->fd, &ep);
 }
 
@@ -212,6 +215,7 @@ DECLARE_THREAD_FN(ponyint_asio_backend_dispatch)
 
   while(!atomic_load_explicit(&b->terminate, memory_order_relaxed))
   {
+    printf("epoll wait...\n");
     int event_cnt = epoll_wait(b->epfd, b->events, MAX_EVENTS, -1);
 
     for(int i = 0; i < event_cnt; i++)
@@ -219,9 +223,13 @@ DECLARE_THREAD_FN(ponyint_asio_backend_dispatch)
       struct epoll_event* ep = &(b->events[i]);
 
       if(ep->data.ptr == b)
+      {
+        printf("epoll wakeup triggered\n");
         continue;
+      }
 
       asio_event_t* ev = ep->data.ptr;
+      printf("epoll got event for fd %d ev %p\n", ev->fd, ev);
       uint32_t flags = 0;
       uint32_t count = 0;
 
@@ -229,6 +237,7 @@ DECLARE_THREAD_FN(ponyint_asio_backend_dispatch)
       {
         if(ep->events & (EPOLLIN | EPOLLRDHUP | EPOLLHUP | EPOLLERR))
         {
+          printf("epoll got read event for fd %d ev %p\n", ev->fd, ev);
           flags |= ASIO_READ;
           ev->readable = true;
         }
@@ -238,6 +247,7 @@ DECLARE_THREAD_FN(ponyint_asio_backend_dispatch)
       {
         if(ep->events & EPOLLOUT)
         {
+          printf("epoll got write event for fd %d ev %p\n", ev->fd, ev);
           flags |= ASIO_WRITE;
           ev->writeable = true;
         }
@@ -251,11 +261,13 @@ DECLARE_THREAD_FN(ponyint_asio_backend_dispatch)
           ssize_t rc = read(ev->fd, &missed, sizeof(uint64_t));
           (void)rc;
           flags |= ASIO_TIMER;
+          printf("epoll got timer event for fd %d ev %p\n", ev->fd, ev);
         }
       }
 
       if(ev->flags & ASIO_SIGNAL)
       {
+        printf("epoll fd has ASIO_SIGNAL\n");
         if(ep->events & (EPOLLIN | EPOLLRDHUP | EPOLLHUP | EPOLLERR))
         {
           uint64_t missed;
@@ -263,15 +275,26 @@ DECLARE_THREAD_FN(ponyint_asio_backend_dispatch)
           (void)rc;
           flags |= ASIO_SIGNAL;
           count = (uint32_t)missed;
+          printf("epoll got signal event for fd %d ev %p, epoll missed: %lud\n", ev->fd, ev, missed);
         }
       }
 
       if(flags != 0)
       {
         if(ev->auto_resub && !(flags & ASIO_WRITE))
+        {
+          printf("epoll resubscribing write for fd %d ev %p\n", ev->fd, ev);
           pony_asio_event_resubscribe_write(ev);
+        }
+
         if(ev->auto_resub && !(flags & ASIO_READ))
+        {
+          printf("epoll resubscribing read for fd %d ev %p\n", ev->fd, ev);
           pony_asio_event_resubscribe_read(ev);
+        }
+
+        printf("epoll sending event for fd %d, ev %p auto_resub: %d, read: %d, write: %d\n", ev->fd, ev,
+               ev->auto_resub, (flags & ASIO_READ), (flags & ASIO_WRITE));
         pony_asio_event_send(ev, flags, count);
       }
     }
@@ -316,6 +339,7 @@ PONY_API void pony_asio_event_subscribe(asio_event_t* ev)
     // if the old_count was 0
     if (old_count == 0)
       ponyint_sched_noisy_asio(SPECIAL_THREADID_EPOLL);
+    printf("epoll subscribe fd %d ev %p is noisy, old_count: %lu\n", ev->fd, ev, old_count);
   }
 
   struct epoll_event ep;
@@ -364,11 +388,13 @@ PONY_API void pony_asio_event_subscribe(asio_event_t* ev)
   }
 
   if(ev->flags & ASIO_ONESHOT) {
+    printf("epoll fd %d ev %p is oneshot\n", ev->fd, ev);
     ep.events |= EPOLLONESHOT;
     ev->auto_resub = true;
   }
 
-  epoll_ctl(b->epfd, EPOLL_CTL_ADD, ev->fd, &ep);
+  int ret = epoll_ctl(b->epfd, EPOLL_CTL_ADD, ev->fd, &ep);
+  printf("epoll ctl add fd %d ret %d\n", ev->fd, ret);
 }
 
 PONY_API void pony_asio_event_setnsec(asio_event_t* ev, uint64_t nsec)
@@ -400,12 +426,16 @@ PONY_API void pony_asio_event_unsubscribe(asio_event_t* ev)
     uint64_t old_count = ponyint_asio_noisy_remove();
     // tell scheduler threads that asio has no noisy actors
     // if the old_count was 1
-    if (old_count == 1)
+    if (old_count == 1) {
+      printf("asio thread is no longer noisy\n");
       ponyint_sched_unnoisy_asio(SPECIAL_THREADID_EPOLL);
+    }
+    printf("epoll unsubscribe fd %d ev %p is noisy, old_count: %lu\n", ev->fd, ev, old_count);
     ev->noisy = false;
   }
 
-  epoll_ctl(b->epfd, EPOLL_CTL_DEL, ev->fd, NULL);
+  int ret = epoll_ctl(b->epfd, EPOLL_CTL_DEL, ev->fd, NULL);
+  printf("epoll ctl del fd %d ret %d\n", ev->fd, ret);
 
   if(ev->flags & ASIO_TIMER)
   {
